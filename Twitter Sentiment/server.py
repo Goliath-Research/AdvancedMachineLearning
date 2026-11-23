@@ -11,15 +11,50 @@ Please keep in mind the limits imposed by the twitter API:
     https://dev.twitter.com/rest/public/rate-limits
 For example, you can only do 15 follower list fetches per
 15 minute window, but you can do 900 user timeline fetches.
+
+Every page calls Twitter with the user access token above, so it can
+read anything that account can see, including protected accounts.
+Pages are therefore only served to clients that log in with HTTP Basic
+credentials set in the SENTIMENT_USERNAME and SENTIMENT_PASSWORD
+environment variables. If either is unset, every request is refused.
 """
+import hmac
+import os
 import sys
-from flask import Flask, render_template
+from flask import Flask, Response, render_template, request
 from tweetie import *
 from colour import Color
 
 from numpy import median
 
 app = Flask(__name__)
+
+LOGIN_USERNAME = os.environ.get('SENTIMENT_USERNAME', '')
+LOGIN_PASSWORD = os.environ.get('SENTIMENT_PASSWORD', '')
+if not (LOGIN_USERNAME and LOGIN_PASSWORD):
+    sys.stderr.write("SENTIMENT_USERNAME and SENTIMENT_PASSWORD are not set; "
+                     "all requests will be refused.\n")
+
+
+def _same(supplied, expected):
+    return hmac.compare_digest((supplied or '').encode('utf-8'),
+                               expected.encode('utf-8'))
+
+
+@app.before_request
+def require_login():
+    """
+    Refuse the request before any route touches the Twitter API unless the
+    client presents the operator-configured credentials.
+    """
+    auth = request.authorization
+    if (LOGIN_USERNAME and LOGIN_PASSWORD and auth is not None
+            and auth.type == 'basic'
+            and _same(auth.username, LOGIN_USERNAME)
+            & _same(auth.password, LOGIN_PASSWORD)):
+        return None
+    return Response('Login required.\n', 401,
+                    {'WWW-Authenticate': 'Basic realm="Twitter Sentiment"'})
 
 def add_color(tweets):
     """
@@ -69,7 +104,7 @@ api = authenticate(twitter_auth_filename)
 #app.run(host='0.0.0.0', port=5000)
 
 #sudo python2 server.py /Users/Ben/Dropbox/License/twitter.csv
-# gunicorn -D --threads 4 -b 0.0.0.0:5000 --access-logfile server.log server:app twitter.csv
+# SENTIMENT_USERNAME=... SENTIMENT_PASSWORD=... gunicorn -D --threads 4 -b 0.0.0.0:5000 --access-logfile server.log server:app twitter.csv
 
 
 # record = fetch_tweets(api, 'benliu91MSAN692')

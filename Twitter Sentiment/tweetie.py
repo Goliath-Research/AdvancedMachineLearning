@@ -2,6 +2,10 @@ import sys
 import tweepy
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+# users/lookup resolves at most 100 ids per call; never show more than one call's worth.
+MAX_FOLLOWING = 100
+TWITTER_TIMEOUT_SECONDS = 2
+
 
 def loadkeys(filename):
     """"
@@ -24,7 +28,8 @@ def authenticate(twitter_auth_filename):
     auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
     auth.set_access_token(access_token, access_token_secret)
 
-    api = tweepy.API(auth)
+    api = tweepy.API(auth, timeout=TWITTER_TIMEOUT_SECONDS, retry_count=0,
+                     wait_on_rate_limit=False)
     return api
 
 def fetch_tweets(api, name):
@@ -53,7 +58,7 @@ def fetch_tweets(api, name):
     """
     tweets = []
     analyzer = SentimentIntensityAnalyzer()
-    for tweet in tweepy.Cursor(api.user_timeline, id=name).items(100):
+    for tweet in tweepy.Cursor(api.user_timeline, id=name, count=100).items(100):
         tweet_dict = {}
         tweet_dict['id'] = tweet.id
         tweet_dict['created'] = tweet.created_at
@@ -87,15 +92,16 @@ def fetch_following(api,name):
        created: created date (no time info)
        image: the URL of the profile's image
 
-    To collect data: get a list of "friends IDs" then get
-    the list of users for each of those.
+    To collect data: get a list of "friends IDs" then resolve the
+    first MAX_FOLLOWING of them with a single bulk user lookup.
     """
-    id_list = api.friends_ids(name)
+    id_list = list(api.friends_ids(name))[:MAX_FOLLOWING]
     following_list = []
+    if not id_list:
+        return following_list
 
-    for ID in id_list:
+    for acc_info in api.lookup_users(user_ids=id_list):
         person_dict = {}
-        acc_info = api.get_user(ID)
         person_dict['name'] = acc_info.name
         person_dict['screen_name'] = acc_info.screen_name
         person_dict['followers'] = acc_info.followers_count

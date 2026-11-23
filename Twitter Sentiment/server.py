@@ -13,13 +13,40 @@ For example, you can only do 15 follower list fetches per
 15 minute window, but you can do 900 user timeline fetches.
 """
 import sys
-from flask import Flask, render_template
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from flask import Flask, render_template, abort
 from tweetie import *
 from colour import Color
 
 from numpy import median
 
 app = Flask(__name__)
+
+# A request never waits on Twitter longer than this, so a stalled call cannot
+# pin one of the server's few worker threads.
+REQUEST_DEADLINE_SECONDS = 2.5
+# Calls abandoned at the deadline keep running until tweepy's socket timeout;
+# this bounds how many can be outstanding before new requests are refused.
+MAX_PENDING_TWITTER_CALLS = 16
+
+_twitter_pool = ThreadPoolExecutor(max_workers=MAX_PENDING_TWITTER_CALLS)
+_twitter_slots = threading.BoundedSemaphore(MAX_PENDING_TWITTER_CALLS)
+
+
+def call_twitter(fn, *args):
+    if not _twitter_slots.acquire(blocking=False):
+        abort(503)
+    try:
+        future = _twitter_pool.submit(fn, *args)
+    except BaseException:
+        _twitter_slots.release()
+        raise
+    future.add_done_callback(lambda _f: _twitter_slots.release())
+    try:
+        return future.result(timeout=REQUEST_DEADLINE_SECONDS)
+    except FutureTimeout:
+        abort(504)
 
 def add_color(tweets):
     """
@@ -45,7 +72,7 @@ def add_color(tweets):
 @app.route("/<name>")
 def tweets(name):
     "Display the tweets for a screen name color-coded by sentiment score"
-    record = fetch_tweets(api, name)
+    record = call_twitter(fetch_tweets, api, name)
     add_color(record['tweets'])
     median_score = median([record['tweets'][i]['score'] for i in range(len(record['tweets']))])
 
@@ -57,7 +84,7 @@ def following(name):
     Display the list of users followed by a screen name, sorted in
     reverse order by the number of followers of those users.
     """
-    following = fetch_following(api, name)
+    following = call_twitter(fetch_following, api, name)
     following = sorted(following, key=lambda t: t['followers'], reverse=True)
     return render_template('following.html', following = following, name = name)
 
